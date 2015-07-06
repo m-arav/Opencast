@@ -1,0 +1,176 @@
+#!/usr/bin/env python
+
+""" screen-capture utility.  Utilizes avconv"""
+
+# defaults
+DEFAULT_FPS = 15
+DEFAULT_FILE_EXTENSION = ".mkv"
+DEFAULT_CAPTURE_AUDIO_DEVICE = "pulse"
+DEFAULT_CAPTURE_DISPLAY_DEVICE = ":0.0"
+DEFAULT_VIDEO_CODEC = "h264_fast"
+
+import os
+import sys
+import os.path
+import glob
+import random
+import subprocess
+import re
+
+
+PYTHON_3 = (sys.version_info[0] == 3)
+
+
+# Optional packages
+try:
+    import Tkinter
+    have_tk = True
+except ImportError:
+    have_tk = False
+
+try:
+    import multiprocessing
+    have_multiproc = True
+except ImportError:
+    have_multiproc = False
+
+
+# Video codec lines
+vcodecs = {}
+vcodecs["h264_fast"] = ["-vcodec", "libx264", "-preset", "ultrafast", "-g", "15", "-crf", "0", "-pix_fmt", "yuv444p"]
+
+def video_capture_line(fps, x, y, height, width, display_device, video_codec, output_path):
+    """ Returns the command line to capture video (no audio), in a list form
+        compatible with Popen.
+    """
+    threads = 2
+    if have_multiproc:
+        # Detect the number of threads we have available
+        threads = multiprocessing.cpu_count()
+
+    line = ["avconv",
+            "-f", "x11grab",
+            "-r", str(fps),
+            "-s", "%dx%d" % (int(height), int(width)),
+            "-i", display_device + "+" + str(x) + "," + str(y)]
+    line += vcodecs[video_codec]
+    line += ["-threads", str(threads), str(output_path)]
+    print line
+    return line
+
+def get_desktop_resolution():
+    """ Returns the resolution of the desktop as a tuple.
+    """
+    if have_tk:
+        # Use tk to get the desktop resolution if we have it
+        root = Tkinter.Tk()
+        width = root.winfo_screenwidth()
+        height = root.winfo_screenheight()
+        root.destroy()
+        return (width, height)
+    else:
+        # Otherwise call xdpyinfo and parse its output
+        try:
+            proc = subprocess.Popen("xdpyinfo", stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError:
+            return None
+        out, err = proc.communicate()
+        if PYTHON_3:
+            lines = str(out).split("\\n")
+        else:
+            lines = out.split("\n")
+        for line in lines:
+            if "dimensions" in line:
+                line = re.sub(".*dimensions:[ ]*", "", line)
+                line = re.sub("[ ]*pixels.*", "", line)
+                wh = line.strip().split("x")
+                return (int(wh[0]), int(wh[1]))
+
+
+def get_window_position_and_size():
+    """ Prompts the user to click on a window, and returns the window's
+        position and size.
+    """
+    try:
+        proc = subprocess.Popen("xwininfo", stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError:
+        return None
+    out, err = proc.communicate()
+    if PYTHON_3:
+        lines = str(out).split("\\n")
+    else:
+        lines = out.split("\n")
+    x = 0
+    y = 0
+    w = 0
+    h = 0
+    xt = False
+    yt = False
+    wt = False
+    ht = False
+    for line in lines:
+        if "Absolute upper-left X:" in line:
+            x = int(re.sub("[^0-9]", "", line))
+            xt = True
+        elif "Absolute upper-left Y:" in line:
+            y = int(re.sub("[^0-9]", "", line))
+            yt = True
+        elif "Width:" in line:
+            w = int(re.sub("[^0-9]", "", line))
+            wt = True
+        elif "Height:" in line:
+            h = int(re.sub("[^0-9]", "", line))
+            ht = True
+    if xt and yt and wt and ht:
+        return (x, y, w, h)
+    else:
+        return None
+
+
+def get_default_output_path():
+    """ Creates a default output file path.
+        Pattern: out_####.ext
+    """
+    filenames = glob.glob("out_????" + DEFAULT_FILE_EXTENSION)
+    for i in range(1, 9999):
+        name = "out_" + str(i).rjust(4,'0') + DEFAULT_FILE_EXTENSION
+        tally = 0
+        for f in filenames:
+            if f == name:
+                tally += 1
+        if tally == 0:
+            return name
+    return "out_9999" + DEFAULT_FILE_EXTENSION
+
+def rec_to_file(op):
+    # Set up default file path
+    out_path = get_default_output_path()
+    # Get desktop resolution
+    try:
+        dres = get_desktop_resolution()
+    except:
+        print("Error: unable to determine desktop resolution.")
+        raise
+
+    # Capture values
+    fps = DEFAULT_FPS
+    if op=='1':
+        print("Please click on a window to capture.")
+        x, y, width, height = get_window_position_and_size()
+    else:
+        x = 0
+        y = 0
+        width = dres[0]
+        height = dres[1]
+
+    # checking resolution conforms to the restrictions
+    width -= width % 2
+    height -= height % 2
+
+    # Capture!
+    proc = subprocess.Popen(video_capture_line(fps, x, y, width, height, DEFAULT_CAPTURE_DISPLAY_DEVICE, DEFAULT_VIDEO_CODEC, out_path)).wait()
+    print("Done!")
+
+if __name__=='__main__':
+   print sys.argv[1]
+   rec_to_file(sys.argv[1])
